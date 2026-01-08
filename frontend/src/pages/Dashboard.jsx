@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 // MUI
@@ -33,10 +33,16 @@ import HourglassBottomRoundedIcon from "@mui/icons-material/HourglassBottomRound
 const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 export default function Dashboard() {
-  const { user, token } = useAuth();
+  const { user, token: ctxToken } = useAuth();
+  const navigate = useNavigate();
+
+  // ✅ fallback لو token مش موجود في context
+  const token = ctxToken || localStorage.getItem("token");
 
   const name = user?.user?.name || "مستخدم";
-  const role = (user?.role || "غير معروف").toLowerCase();
+  const role = String(
+    user?.role?.name ?? user?.role ?? "غير معروف"
+  ).toLowerCase();
 
   const authHeaders = useMemo(
     () => ({
@@ -94,61 +100,109 @@ export default function Dashboard() {
         new Date(a.created_at || a.createdAt || 0)
     );
 
-  useEffect(() => {
-    if (!token) return;
+  const fetchProjects = async () => {
+    const res = await fetch(`${API_BASE_URL}/projects`, {
+      headers: authHeaders,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.message || "تعذر جلب المشاريع");
+    return data?.projects || [];
+  };
 
-    const fetchDashboard = async () => {
+  const fetchProjectTasks = async (projectId) => {
+    const res = await fetch(`${API_BASE_URL}/project/${projectId}/tasks`, {
+      headers: authHeaders,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) return []; // ✅ لا نوقف الداشبورد إذا مشروع واحد فشل
+    return data?.tasks || [];
+  };
+
+  const fetchPendingInvites = async () => {
+    // ✅ حسب دورك
+    // supervisor: /supervisor/invitations
+    // student: /student/invitations
+    // admin: نجرب الاثنين ونجمعهم
+    try {
+      if (role === "supervisor") {
+        const r = await fetch(`${API_BASE_URL}/supervisor/invitations`, {
+          headers: authHeaders,
+        });
+        const j = await r.json().catch(() => null);
+        if (r.ok)
+          return Array.isArray(j?.invitations) ? j.invitations.length : 0;
+        return 0;
+      }
+
+      if (role === "student") {
+        const r = await fetch(`${API_BASE_URL}/student/invitations`, {
+          headers: authHeaders,
+        });
+        const j = await r.json().catch(() => null);
+        if (r.ok)
+          return Array.isArray(j?.invitations) ? j.invitations.length : 0;
+        return 0;
+      }
+
+      if (role === "admin") {
+        const [r1, r2] = await Promise.all([
+          fetch(`${API_BASE_URL}/supervisor/invitations`, {
+            headers: authHeaders,
+          }),
+          fetch(`${API_BASE_URL}/student/invitations`, {
+            headers: authHeaders,
+          }),
+        ]);
+        const j1 = await r1.json().catch(() => null);
+        const j2 = await r2.json().catch(() => null);
+
+        const c1 =
+          r1.ok && Array.isArray(j1?.invitations) ? j1.invitations.length : 0;
+        const c2 =
+          r2.ok && Array.isArray(j2?.invitations) ? j2.invitations.length : 0;
+        return c1 + c2;
+      }
+
+      return 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  useEffect(() => {
+    if (!token) {
+      navigate("/login");
+      return;
+    }
+
+    const run = async () => {
       try {
         setLoading(true);
         setError("");
 
-        // 1) حاول /dashboard إن كان موجود
-        const dashRes = await fetch(`${API_BASE_URL}/dashboard`, {
-          headers: authHeaders,
+        // ✅ 1) جلب المشاريع
+        const projects = await fetchProjects();
+
+        // ✅ 2) جلب مهام كل مشروع (Promise.all)
+        const taskLists = await Promise.all(
+          projects.map((p) => fetchProjectTasks(p.id))
+        );
+
+        // flatten + ضيف project info لكل مهمة
+        const allTasks = taskLists.flat().map((t) => {
+          const project = projects.find((p) => p.id === t.project_id);
+          return {
+            ...t,
+            project_title: project?.title || t.project_title || "",
+          };
         });
-        const dashJson = await dashRes.json().catch(() => null);
 
-        if (dashRes.ok && dashJson) {
-          const s = dashJson.stats || dashJson;
-
-          setStats({
-            projectsTotal: Number(s.projectsTotal ?? s.projects_total ?? 0),
-            tasksTotal: Number(s.tasksTotal ?? s.tasks_total ?? 0),
-            tasksCompleted: Number(s.tasksCompleted ?? s.tasks_completed ?? 0),
-            progress: safePercent(s.progress ?? s.progress_percentage ?? 0),
-            pendingInvites: Number(s.pendingInvites ?? s.pending_invites ?? 0),
-          });
-
-          setRecentProjects(
-            sortByDateDesc(
-              dashJson.recentProjects || dashJson.projects || []
-            ).slice(0, 6)
-          );
-          setRecentTasks(
-            sortByDateDesc(dashJson.recentTasks || dashJson.tasks || []).slice(
-              0,
-              6
-            )
-          );
-          return;
-        }
-
-        // 2) fallback: projects + tasks
-        const [projRes, taskRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/projects`, { headers: authHeaders }),
-          fetch(`${API_BASE_URL}/tasks`, { headers: authHeaders }),
-        ]);
-
-        const projJson = await projRes.json().catch(() => null);
-        const taskJson = await taskRes.json().catch(() => null);
-
-        const projects = projJson?.projects || [];
-        const tasks = taskJson?.tasks || [];
-
-        const tasksTotal = tasks.length;
-        const tasksCompleted = tasks.filter(
-          (t) => (t.status || "").toLowerCase() === "completed"
+        const tasksTotal = allTasks.length;
+        const tasksCompleted = allTasks.filter(
+          (t) => String(t.status || "").toLowerCase() === "completed"
         ).length;
+
+        const pendingInvites = await fetchPendingInvites();
 
         setStats({
           projectsTotal: projects.length,
@@ -157,22 +211,27 @@ export default function Dashboard() {
           progress: tasksTotal
             ? safePercent((tasksCompleted / tasksTotal) * 100)
             : 0,
-          pendingInvites: 0,
+          pendingInvites,
         });
 
         setRecentProjects(sortByDateDesc(projects).slice(0, 6));
-        setRecentTasks(sortByDateDesc(tasks).slice(0, 6));
-      } catch {
-        setError("تعذر تحميل بيانات الداشبورد. تأكد من الـ API أو التوكن.");
+
+        // ✅ آخر 6 مهام (الأحدث حسب created_at لو موجود)
+        setRecentTasks(sortByDateDesc(allTasks).slice(0, 6));
+      } catch (e) {
+        setError(
+          e?.message ||
+            "تعذر تحميل بيانات الداشبورد. تأكد من الـ API أو التوكن."
+        );
       } finally {
         setLoading(false);
       }
     };
 
-    fetchDashboard();
-  }, [token, authHeaders]);
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
-  // نفس ثيم صفحاتك: خلفية + container بعرض كبير + Cards ناعمة
   return (
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1400, mx: "auto" }}>
       {/* Header */}
@@ -354,7 +413,7 @@ export default function Dashboard() {
               {stats.pendingInvites}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              (إن كانت مدعومة من API)
+              عدد الدعوات المعلقة (حسب الدور)
             </Typography>
           </Paper>
         </Stack>
@@ -469,6 +528,8 @@ export default function Dashboard() {
                       <TableCell sx={{ fontWeight: 900 }}>المهمة</TableCell>
                       <TableCell sx={{ fontWeight: 900 }}>الحالة</TableCell>
                       <TableCell sx={{ fontWeight: 900 }}>الموعد</TableCell>
+                      <TableCell sx={{ fontWeight: 900 }}>المشروع</TableCell>
+                      <TableCell sx={{ fontWeight: 900 }}>فتح</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -482,6 +543,29 @@ export default function Dashboard() {
                           {t.deadline
                             ? new Date(t.deadline).toLocaleDateString("ar-EG")
                             : "—"}
+                        </TableCell>
+                        <TableCell sx={{ color: "text.secondary" }}>
+                          {t.project_title ||
+                            (t.project_id ? `#${t.project_id}` : "—")}
+                        </TableCell>
+                        <TableCell>
+                          {t.project_id ? (
+                            <Button
+                              component={RouterLink}
+                              to={`/dashboard/projects/${t.project_id}`}
+                              size="small"
+                              variant="outlined"
+                              sx={{
+                                borderRadius: 2,
+                                fontWeight: 900,
+                                textTransform: "none",
+                              }}
+                            >
+                              Open
+                            </Button>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}

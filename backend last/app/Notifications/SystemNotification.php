@@ -9,26 +9,52 @@ class SystemNotification extends Notification
 {
     use Queueable;
 
-    public function __construct(
-        public string $type,
-        public string $title,
-        public ?string $body = null,
-        public array $data = []
-    ) {}
+    protected string $type;
+    protected string $title;
+    protected string $body;
+    protected array $data;
 
+    public function __construct(
+        string $type,
+        string $title,
+        string $body,
+        array $data = []
+    ) {
+        $this->type  = $type;
+        $this->title = $title;
+        $this->body  = $body;
+        $this->data  = $data;
+    }
+
+    /**
+     * القنوات المستخدمة
+     */
     public function via($notifiable): array
     {
-        // Database notifications
         return ['database'];
     }
 
+    /**
+     * البيانات المخزنة في جدول notifications
+     */
     public function toDatabase($notifiable): array
     {
+        // ✅ حل جذري:
+        // إذا url موجود داخل data أو داخل data[data]
+        // نرفعه دائمًا للمستوى الأعلى
+        $url = $this->data['url']
+            ?? ($this->data['data']['url'] ?? null);
+
         return [
-            'type'  => $this->type,     // e.g. task.created, comment.created ...
-            'title' => $this->title,    // short title
-            'body'  => $this->body,     // optional details
-            'data'  => $this->data,     // any extra payload (project_id, task_id, url...)
+            'type'  => $this->type,
+            'title' => $this->title,
+            'body'  => $this->body,
+
+            // data نظيفة ومضمونة
+            'data'  => array_merge(
+                $this->data,
+                $url ? ['url' => $url] : []
+            ),
         ];
     }
 }

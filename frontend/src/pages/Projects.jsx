@@ -71,7 +71,45 @@ export default function Projects() {
         return;
       }
 
-      setProjects(data?.projects || []);
+      const baseProjects = data?.projects || [];
+
+      // ✅ اجلب progress لكل مشروع (حتى تتحدث الحالة حسب المهام)
+      const projectsWithProgress = await Promise.all(
+        baseProjects.map(async (p) => {
+          if (!p?.id) return p;
+
+          try {
+            const prRes = await fetch(
+              `${API_BASE_URL}/project/${p.id}/progress`,
+              {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: "application/json",
+                },
+              }
+            );
+
+            const pr = await prRes.json().catch(() => null);
+            if (!prRes.ok) return p;
+
+            const total = pr?.total_tasks ?? 0;
+            const completed = pr?.completed_tasks ?? 0;
+            const percent = pr?.progress_percentage ?? 0;
+
+            return {
+              ...p,
+              // ✅ نخزنهم داخل المشروع حتى نستخدمهم بالحالة
+              progress_percentage: percent,
+              total_tasks: total,
+              completed_tasks: completed,
+            };
+          } catch {
+            return p;
+          }
+        })
+      );
+
+      setProjects(projectsWithProgress);
     } catch (e) {
       setError("حدث خطأ في الاتصال بالسيرفر");
       setProjects([]);
@@ -163,6 +201,40 @@ export default function Projects() {
 
     // بما أن المشروع وصل للطالب من API فهو غالباً عضو
     return <Chip size="small" color="success" label="👥 عضو" />;
+  };
+
+  // ✅✅ (إضافة فقط) نفس statusChip + اشتقاق الحالة من progress لو موجود
+  const statusChip = (status) => {
+    const s = String(status || "pending").toLowerCase();
+    if (s === "completed")
+      return <Chip size="small" color="success" label="مكتمل" />;
+    if (s === "in_progress")
+      return <Chip size="small" color="info" label="قيد التنفيذ" />;
+    if (s === "pending")
+      return <Chip size="small" color="warning" label="قيد الانتظار" />;
+    return <Chip size="small" variant="outlined" label={status || "—"} />;
+  };
+
+  const derivedStatusFromProject = (p) => {
+    const percent = p?.progress_percentage;
+
+    if (percent !== null && percent !== undefined) {
+      const pr = Number(percent) || 0;
+      if (pr >= 100) return "completed";
+      if (pr > 0) return "in_progress";
+      return "pending";
+    }
+
+    const total = Number(p?.total_tasks ?? 0);
+    const completed = Number(p?.completed_tasks ?? 0);
+
+    if (total > 0) {
+      if (completed >= total) return "completed";
+      if (completed > 0) return "in_progress";
+      return "pending";
+    }
+
+    return String(p?.status || "pending").toLowerCase();
   };
 
   return (
@@ -337,7 +409,8 @@ export default function Projects() {
                     </TableCell>
 
                     <TableCell>
-                      <Chip size="small" label={p.status || "pending"} />
+                      {/* ✅✅ تعديل فقط هنا: عرض الحالة المشتقة */}
+                      {statusChip(derivedStatusFromProject(p))}
                     </TableCell>
 
                     <TableCell>{p.user?.name || "—"}</TableCell>

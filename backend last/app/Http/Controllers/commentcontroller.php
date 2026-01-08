@@ -151,18 +151,24 @@ class CommentController extends Controller
         if ($projectId) {
             $project = Project::find($projectId);
 
-            $this->notifications->notifyProjectParticipants(
-                projectId: $projectId,
-                actorUserId: (int)$actor->id,
-                type: 'comment.task',
-                title: 'تعليق جديد على مهمة',
-                body: "{$actor->name} أضاف تعليقاً على مهمة داخل مشروع: " . ($project?->title ?? 'مشروع'),
+            $this->notifications->notifyProject(
+                project: $project,
+                type: 'comment_added',
+                title: 'تعليق جديد',
+                body: "{$request->user()->name} أضاف تعليقًا",
                 data: [
                     'project_id' => $projectId,
                     'task_id' => (int)$taskId,
                     'comment_id' => (int)$comment->id,
+                
+                    // ✅ أهم سطر
+                    'url' => "/dashboard/projects/{$projectId}",
+
                 ]
+                ,
+                ignoreUserId: $request->user()->id
             );
+            
         }
 
         return response()->json([

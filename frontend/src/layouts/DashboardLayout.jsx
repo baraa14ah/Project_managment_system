@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
@@ -19,6 +19,9 @@ import {
   Stack,
   Menu,
   MenuItem,
+  Badge,
+  Tooltip,
+  CircularProgress,
 } from "@mui/material";
 
 import SearchIcon from "@mui/icons-material/Search";
@@ -35,11 +38,26 @@ import PersonAddAltRoundedIcon from "@mui/icons-material/PersonAddAltRounded";
 import AccountCircleRoundedIcon from "@mui/icons-material/AccountCircleRounded";
 
 const drawerWidth = 280;
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 export default function DashboardLayout() {
-  const { user, logout } = useAuth();
+  const { user, token: ctxToken, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // ✅ fallback لو token مش موجود في context
+  const token = ctxToken || localStorage.getItem("token");
+
+  const authHeaders = useMemo(
+    () => ({
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    }),
+    [token]
+  );
+
+  // ✅ NEW: يمنع إعادة طلب العدّادات كثير
+  const [countsLoadedOnce, setCountsLoadedOnce] = useState(false);
 
   const roleName = String(user?.role?.name ?? user?.role ?? "").toLowerCase();
   const isAdmin = roleName === "admin";
@@ -48,7 +66,9 @@ export default function DashboardLayout() {
 
   const displayName = user?.user?.name || "User";
 
-  // ✅ Menu state (Profile / Logout)
+  // =========================
+  // Profile Menu (كما هو)
+  // =========================
   const [anchorEl, setAnchorEl] = useState(null);
   const menuOpen = Boolean(anchorEl);
 
@@ -66,8 +86,221 @@ export default function DashboardLayout() {
     navigate("/login");
   };
 
-  // ملاحظة: دعوات المشرف -> supervisor/admin فقط
-  // دعوات الطالب -> student/admin فقط
+  // =========================
+  // Notifications (Topbar)
+  // =========================
+  const [notifAnchorEl, setNotifAnchorEl] = useState(null);
+  const notifOpen = Boolean(notifAnchorEl);
+
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifError, setNotifError] = useState("");
+  const [latestNotifs, setLatestNotifs] = useState([]); // آخر 3
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const openNotifMenu = (e) => setNotifAnchorEl(e.currentTarget);
+  const closeNotifMenu = () => setNotifAnchorEl(null);
+
+  // ✅ NEW: Cooldown لمنع ضرب السيرفر بسرعة
+  const [lastNotifFetchAt, setLastNotifFetchAt] = useState(0);
+
+  // ✅ قراءة title/body/url بشكل مرن (كما هو)
+  const parseNotif = (n) => {
+    const d = n?.data || {};
+    const type =
+      d?.type || d?.notification_type || d?.event || d?.event_type || "";
+
+    const title = d?.title ?? n?.title ?? "Notification";
+    const body = d?.body ?? n?.body ?? d?.message ?? "";
+
+    return { type, title, body };
+  };
+
+  const fetchUnreadCount = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/notifications/unread`, {
+        headers: authHeaders,
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return;
+
+      const count =
+        data?.unread_count ??
+        data?.count ??
+        (Array.isArray(data?.notifications) ? data.notifications.length : 0) ??
+        (Array.isArray(data?.unread) ? data.unread.length : 0) ??
+        0;
+
+      setUnreadCount(Number(count) || 0);
+    } catch {
+      // ignore
+    }
+  };
+
+  const fetchLatestNotifications = async () => {
+    if (!token) return;
+
+    // ✅ NEW: حماية من التكرار السريع (Too Many Attempts)
+    const now = Date.now();
+    if (now - lastNotifFetchAt < 1500) return; // 1.5 ثانية
+    setLastNotifFetchAt(now);
+
+    setNotifLoading(true);
+    setNotifError("");
+    try {
+      const res = await fetch(`${API_BASE_URL}/notifications`, {
+        headers: authHeaders,
+      });
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setNotifError(data?.message || "تعذر جلب الإشعارات");
+        setLatestNotifs([]);
+        return;
+      }
+
+      const list = data?.notifications || data || [];
+      const arr = Array.isArray(list) ? list : [];
+      setLatestNotifs(arr.slice(0, 3));
+
+      const uc = data?.unread_count;
+      if (uc !== undefined) setUnreadCount(Number(uc) || 0);
+      else fetchUnreadCount();
+    } catch {
+      setNotifError("خطأ أثناء الاتصال بالسيرفر");
+      setLatestNotifs([]);
+    } finally {
+      setNotifLoading(false);
+    }
+  };
+
+  const markAsRead = async (notifId) => {
+    try {
+      await fetch(`${API_BASE_URL}/notifications/mark-read/${notifId}`, {
+        method: "POST",
+        headers: authHeaders,
+      });
+    } catch {}
+  };
+
+  const resolveNotificationUrl = (n) => {
+    const payload = n?.data || {};
+    const extra = payload?.data || {};
+
+    const directUrl = extra?.url || payload?.url;
+    if (directUrl) return directUrl;
+
+    const projectId = extra?.project_id;
+    const taskId = extra?.task_id;
+    const commentId = extra?.comment_id;
+    const type = payload?.type || "";
+
+    if (type === "comment.project" && projectId) {
+      return commentId
+        ? `/dashboard/projects/${projectId}?tab=comments&comment_id=${commentId}`
+        : `/dashboard/projects/${projectId}?tab=comments`;
+    }
+
+    if (type === "comment.task" && projectId) {
+      return `/dashboard/projects/${projectId}?tab=tasks${
+        taskId ? `&task_id=${taskId}` : ""
+      }${commentId ? `&comment_id=${commentId}` : ""}`;
+    }
+
+    if (type.startsWith("task.") && projectId) {
+      return `/dashboard/projects/${projectId}?tab=tasks${
+        taskId ? `&task_id=${taskId}` : ""
+      }`;
+    }
+
+    if (projectId) return `/dashboard/projects/${projectId}`;
+    return "/dashboard/notifications";
+  };
+
+  const handleClickNotification = async (n) => {
+    closeNotifMenu();
+
+    const url = resolveNotificationUrl(n);
+
+    if (n?.id) {
+      await markAsRead(n.id);
+      setUnreadCount((c) =>
+        Math.max(0, (Number(c) || 0) - (n?.read_at ? 0 : 1))
+      );
+    }
+
+    navigate(url);
+  };
+
+  useEffect(() => {
+    if (notifOpen) fetchLatestNotifications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifOpen]);
+
+  // =========================
+  // ✅ Invitations badge counts (كما هو عندك)
+  // =========================
+  const [studentInvCount, setStudentInvCount] = useState(0);
+  const [supervisorInvCount, setSupervisorInvCount] = useState(0);
+
+  const fetchInvitationCounts = async () => {
+    if (!token) return;
+
+    if (isStudent || isAdmin) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/student/invitations`, {
+          headers: authHeaders,
+        });
+        const data = await res.json().catch(() => null);
+
+        if (res.ok) {
+          const count =
+            data?.pending_count ??
+            data?.count ??
+            (Array.isArray(data?.invitations) ? data.invitations.length : 0) ??
+            (Array.isArray(data?.pending) ? data.pending.length : 0) ??
+            0;
+
+          setStudentInvCount(Number(count) || 0);
+        }
+      } catch {}
+    }
+
+    if (isSupervisor || isAdmin) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/supervisor/invitations`, {
+          headers: authHeaders,
+        });
+        const data = await res.json().catch(() => null);
+
+        if (res.ok) {
+          const count =
+            data?.pending_count ??
+            data?.count ??
+            (Array.isArray(data?.invitations) ? data.invitations.length : 0) ??
+            (Array.isArray(data?.pending) ? data.pending.length : 0) ??
+            0;
+
+          setSupervisorInvCount(Number(count) || 0);
+        }
+      } catch {}
+    }
+  };
+
+  // ✅ NEW: كل العدّادات تنطلب مرة واحدة بعد توفر token (يمنع Too Many Attempts)
+  useEffect(() => {
+    if (!token) return;
+    if (countsLoadedOnce) return;
+
+    setCountsLoadedOnce(true);
+    fetchUnreadCount();
+    fetchInvitationCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, countsLoadedOnce]);
+
+  // =========================
+  // Sidebar Nav (نفسه)
+  // =========================
   const navItems = [
     { label: "Home", to: "/dashboard", icon: <HomeRoundedIcon /> },
     {
@@ -79,25 +312,24 @@ export default function DashboardLayout() {
       label: "Notifications",
       to: "/dashboard/notifications",
       icon: <NotificationsRoundedIcon />,
+      badge: unreadCount,
     },
 
-    // ✅ تظهر فقط للمشرف/الأدمن
     {
       label: "Supervisor Invitations",
       to: "/dashboard/supervisor/invitations",
       icon: <SupervisorAccountRoundedIcon />,
       hidden: !(isSupervisor || isAdmin),
+      badge: supervisorInvCount,
     },
-
-    // ✅ تظهر فقط للطالب/الأدمن
     {
       label: "Student Invitations",
       to: "/dashboard/student/invitations",
       icon: <PersonAddAltRoundedIcon />,
       hidden: !(isStudent || isAdmin),
+      badge: studentInvCount,
     },
 
-    // عناصر شكلية (لو ما عندك صفحات لها خَلِّها hidden)
     {
       label: "Messages",
       to: "/dashboard/messages",
@@ -214,8 +446,20 @@ export default function DashboardLayout() {
                       color: active ? "primary.main" : "text.secondary",
                     }}
                   >
-                    {item.icon}
+                    {item.badge ? (
+                      <Badge
+                        color="error"
+                        badgeContent={item.badge}
+                        max={99}
+                        overlap="circular"
+                      >
+                        {item.icon}
+                      </Badge>
+                    ) : (
+                      item.icon
+                    )}
                   </ListItemIcon>
+
                   <ListItemText
                     primary={item.label}
                     primaryTypographyProps={{
@@ -254,7 +498,7 @@ export default function DashboardLayout() {
 
       {/* Main */}
       <Box sx={{ flexGrow: 1, p: 3 }}>
-        {/* Topbar */}
+        {/* Topbar (كما هو عندك تماماً) */}
         <Box
           sx={{
             bgcolor: "#FFFFFF",
@@ -280,11 +524,131 @@ export default function DashboardLayout() {
               ),
             }}
           />
+
           <Box sx={{ flexGrow: 1 }} />
 
-          <IconButton>
-            <NotificationsRoundedIcon />
-          </IconButton>
+          {/* ✅ Notifications */}
+          <Tooltip title="Notifications">
+            <IconButton onClick={openNotifMenu}>
+              <Badge color="error" badgeContent={unreadCount} max={99}>
+                <NotificationsRoundedIcon />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+
+          <Menu
+            anchorEl={notifAnchorEl}
+            open={notifOpen}
+            onClose={closeNotifMenu}
+            PaperProps={{
+              sx: {
+                width: 360,
+                borderRadius: 3,
+                mt: 1,
+                overflow: "hidden",
+              },
+            }}
+          >
+            <Box sx={{ px: 2, py: 1.25, bgcolor: "#F7F7FB" }}>
+              <Typography sx={{ fontWeight: 900 }}>آخر الإشعارات</Typography>
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                آخر 3 إشعارات
+              </Typography>
+            </Box>
+
+            {notifLoading && (
+              <Box
+                sx={{ p: 2, display: "flex", gap: 1.5, alignItems: "center" }}
+              >
+                <CircularProgress size={18} />
+                <Typography variant="body2" color="text.secondary">
+                  جارِ التحميل...
+                </Typography>
+              </Box>
+            )}
+
+            {!notifLoading && notifError && (
+              <Box sx={{ p: 2 }}>
+                <Typography variant="body2" color="error">
+                  {notifError}
+                </Typography>
+              </Box>
+            )}
+
+            {!notifLoading && !notifError && latestNotifs.length === 0 && (
+              <Box sx={{ p: 2 }}>
+                <Typography variant="body2" color="text.secondary">
+                  لا توجد إشعارات بعد.
+                </Typography>
+              </Box>
+            )}
+
+            {!notifLoading &&
+              !notifError &&
+              latestNotifs.map((n) => {
+                const { title, body } = parseNotif(n);
+                const isUnread = !n?.read_at;
+
+                return (
+                  <MenuItem
+                    key={n?.id}
+                    onClick={() => handleClickNotification(n)}
+                    sx={{
+                      alignItems: "flex-start",
+                      gap: 1.5,
+                      py: 1.2,
+                      borderLeft: isUnread
+                        ? "4px solid"
+                        : "4px solid transparent",
+                      borderLeftColor: isUnread
+                        ? "primary.main"
+                        : "transparent",
+                      whiteSpace: "normal",
+                    }}
+                  >
+                    <Avatar
+                      sx={{
+                        width: 34,
+                        height: 34,
+                        bgcolor: isUnread ? "primary.main" : "grey.400",
+                        mt: 0.2,
+                      }}
+                    >
+                      {(title?.[0] || "N").toUpperCase()}
+                    </Avatar>
+
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 900, fontSize: 13 }} noWrap>
+                        {title}
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        sx={{ color: "text.secondary", fontSize: 12.5 }}
+                        noWrap
+                      >
+                        {body}
+                      </Typography>
+                    </Box>
+                  </MenuItem>
+                );
+              })}
+
+            <Divider />
+
+            <Box sx={{ p: 1.25, display: "flex", gap: 1 }}>
+              <Button
+                fullWidth
+                variant="outlined"
+                onClick={() => {
+                  closeNotifMenu();
+                  navigate("/dashboard/notifications");
+                }}
+                sx={{ borderRadius: 2, fontWeight: 800 }}
+              >
+                View all notifications
+              </Button>
+            </Box>
+          </Menu>
 
           {/* ✅ Clickable user area -> opens menu */}
           <Stack
@@ -316,7 +680,7 @@ export default function DashboardLayout() {
             </Box>
           </Stack>
 
-          {/* ✅ Menu */}
+          {/* ✅ Profile Menu */}
           <Menu
             anchorEl={anchorEl}
             open={menuOpen}

@@ -145,6 +145,20 @@ export default function ProjectDetails() {
     return v;
   };
 
+  // ✅✅ (إضافة فقط) حالة مشتقة من progress
+  const derivedProjectStatus = useMemo(() => {
+    // إذا لا توجد مهام: ارجع status الحقيقي للمشروع
+    if (!progress?.total || Number(progress.total) === 0) {
+      return (project?.status || "pending").toLowerCase();
+    }
+
+    // إذا توجد مهام: احسب الحالة من نسبة التقدم
+    if (Number(progress.percent) >= 100) return "completed";
+    if (Number(progress.completed) > 0 || Number(progress.percent) > 0)
+      return "in_progress";
+    return "pending";
+  }, [progress, project?.status]);
+
   // -------------------- Members (Owner + Students) --------------------
   // NOTE: يعتمد على أن الـ API يرسل project.members (array). إذا اسمها مختلف قلّي.
   const members = Array.isArray(project?.members) ? project.members : [];
@@ -833,7 +847,9 @@ export default function ProjectDetails() {
               alignItems="center"
               sx={{ mt: 1, flexWrap: "wrap" }}
             >
-              {statusChip(project.status)}
+              {/* ✅✅ تعديل فقط: استخدم الحالة المشتقة بدل project.status */}
+              {statusChip(derivedProjectStatus)}
+
               {project.supervisor?.name && (
                 <Chip
                   size="small"
@@ -1228,7 +1244,7 @@ export default function ProjectDetails() {
           alignItems="center"
           sx={{ mb: 2 }}
         >
-          <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+          <Typography id="tasks" variant="subtitle1" sx={{ fontWeight: 800 }}>
             المهام
           </Typography>
         </Stack>
@@ -1338,7 +1354,11 @@ export default function ProjectDetails() {
             border: "1px solid #EAEAEA",
           }}
         >
-          <Typography variant="subtitle1" sx={{ fontWeight: 800, mb: 2 }}>
+          <Typography
+            id="comments"
+            variant="subtitle1"
+            sx={{ fontWeight: 800, mb: 2 }}
+          >
             التعليقات
           </Typography>
 

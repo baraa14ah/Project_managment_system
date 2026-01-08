@@ -12,10 +12,11 @@ class TaskController extends Controller
 {
     protected NotificationService $notifications;
 
-    public function __construct(NotificationService $notifications)
-    {
-        $this->notifications = $notifications;
-    }
+public function __construct(NotificationService $notifications)
+{
+    $this->notifications = $notifications;
+}
+
 
     private function roleName($user): string
     {
@@ -69,17 +70,22 @@ class TaskController extends Controller
         ]);
 
         // ✅ إشعار عند إضافة مهمة
-        $this->notifications->notifyProjectParticipants(
-            projectId: (int)$project->id,
-            actorUserId: (int)$user->id,
-            type: 'task.created',
-            title: 'مهمة جديدة',
-            body: "{$user->name} أضاف مهمة جديدة: {$task->title}",
-            data: [
-                'project_id' => (int)$project->id,
-                'task_id' => (int)$task->id,
-            ]
-        );
+    // ✅ إشعار عند إضافة مهمة
+$this->notifications->notifyProjectParticipants(
+    projectId: (int)$project->id,
+    actorUserId: (int)$user->id,
+    type: 'task.created',
+    title: 'مهمة جديدة',
+    body: "{$user->name} أضاف مهمة جديدة: {$task->title}",
+    data: [
+        'project_id' => (int)$project->id,
+        'task_id' => (int)$task->id,
+
+        // ✅ أهم سطر لحتى الضغط على الإشعار يودّي لمكانه
+        'url' => "/dashboard/projects/{$project->id}",
+    ]
+);
+
 
         return response()->json([
             'message' => 'Task created successfully',
@@ -151,7 +157,9 @@ class TaskController extends Controller
                     'task_id' => (int)$task->id,
                     'old_status' => $oldStatus,
                     'new_status' => $task->status,
-                ]
+                    'url' => "/dashboard/projects/{$project->id}", // ✅
+                  ]
+                  
             );
         }
 

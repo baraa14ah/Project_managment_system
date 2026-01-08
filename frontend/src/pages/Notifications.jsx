@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import {
   Box,
@@ -16,6 +17,7 @@ const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 export default function Notifications() {
   const { token } = useAuth();
+  const navigate = useNavigate();
 
   const authHeaders = useMemo(
     () => ({
@@ -109,6 +111,59 @@ export default function Notifications() {
     }
   };
 
+  // ✅ أهم جزء: استخراج رابط صحيح للإشعار
+  const resolveNotificationUrl = (n) => {
+    const payload = n?.data || {}; // {type,title,body,data:{...}}
+    const extra = payload?.data || {}; // {project_id, task_id, comment_id, url, ...}
+
+    // 1) لو فيه url جاهز (أحيانًا موجود هون)
+    const directUrl = extra?.url || payload?.url;
+    if (directUrl) return directUrl;
+
+    // 2) لو ما فيه url: نبنيه حسب النوع والمعرفات
+    const projectId = extra?.project_id;
+    const taskId = extra?.task_id;
+    const commentId = extra?.comment_id;
+    const type = payload?.type || "";
+
+    // تعليقات على مشروع
+    if (type === "comment.project" && projectId) {
+      // إذا عندك تبويب comments بالواجهة استخدم query
+      return commentId
+        ? `/dashboard/projects/${projectId}?tab=comments&comment_id=${commentId}`
+        : `/dashboard/projects/${projectId}?tab=comments`;
+    }
+
+    // تعليقات على مهمة
+    if (type === "comment.task" && projectId) {
+      return `/dashboard/projects/${projectId}?tab=tasks${
+        taskId ? `&task_id=${taskId}` : ""
+      }${commentId ? `&comment_id=${commentId}` : ""}`;
+    }
+
+    // تغيّر حالة مهمة / إنشاء مهمة / إلخ
+    if (type.startsWith("task.") && projectId) {
+      return `/dashboard/projects/${projectId}?tab=tasks${
+        taskId ? `&task_id=${taskId}` : ""
+      }`;
+    }
+
+    // الافتراضي
+    if (projectId) return `/dashboard/projects/${projectId}`;
+    return "/dashboard/notifications";
+  };
+
+  const handleOpenNotification = async (n) => {
+    const url = resolveNotificationUrl(n);
+
+    // ✅ علّم مقروء قبل الانتقال (إذا كان unread)
+    if (n?.id && !n?.read_at) {
+      await markRead(n.id);
+    }
+
+    navigate(url);
+  };
+
   useEffect(() => {
     if (!token) return;
     fetchAll();
@@ -120,9 +175,7 @@ export default function Notifications() {
       <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
         <Stack alignItems="center" spacing={2}>
           <CircularProgress />
-          <Typography color="text.secondary">
-            Loading notifications...
-          </Typography>
+          <Typography color="text.secondary">Loading notifications.</Typography>
         </Stack>
       </Box>
     );
@@ -187,17 +240,29 @@ export default function Notifications() {
           <Stack spacing={1}>
             {items.map((n) => {
               const payload = n.data || {};
+              const extra = payload.data || {};
               const isUnread = !n.read_at;
+
+              const title = payload.title || "Notification";
+              const body = payload.body || "";
+              const type = payload.type || "system";
 
               return (
                 <Paper
                   key={n.id}
                   variant="outlined"
+                  onClick={() => handleOpenNotification(n)}
                   sx={{
                     p: 1.5,
                     borderRadius: 2,
                     borderColor: "#EFEFEF",
                     bgcolor: isUnread ? "rgba(255,193,7,0.10)" : "transparent",
+                    cursor: "pointer",
+                    "&:hover": {
+                      bgcolor: isUnread
+                        ? "rgba(255,193,7,0.14)"
+                        : "rgba(0,0,0,0.03)",
+                    },
                   }}
                 >
                   <Stack
@@ -207,17 +272,15 @@ export default function Notifications() {
                     spacing={2}
                   >
                     <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 900 }}>
-                        {payload.title || "Notification"}
-                      </Typography>
+                      <Typography sx={{ fontWeight: 900 }}>{title}</Typography>
 
-                      {payload.body ? (
+                      {body ? (
                         <Typography
                           variant="body2"
                           color="text.secondary"
                           sx={{ mt: 0.3, whiteSpace: "pre-wrap" }}
                         >
-                          {payload.body}
+                          {body}
                         </Typography>
                       ) : null}
 
@@ -227,17 +290,16 @@ export default function Notifications() {
                         sx={{ mt: 1 }}
                         alignItems="center"
                       >
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          label={payload.type || "system"}
-                        />
+                        <Chip size="small" variant="outlined" label={type} />
                         <Typography variant="caption" color="text.secondary">
                           {n.created_at
                             ? new Date(n.created_at).toLocaleString("ar-EG")
                             : ""}
                         </Typography>
                       </Stack>
+
+                      {/* (اختياري) للتأكد من البيانات أثناء التجريب */}
+                      {/* <Typography variant="caption">{JSON.stringify(extra)}</Typography> */}
                     </Box>
 
                     <Stack direction="row" spacing={1}>
@@ -245,7 +307,10 @@ export default function Notifications() {
                         <Button
                           size="small"
                           variant="contained"
-                          onClick={() => markRead(n.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            markRead(n.id);
+                          }}
                         >
                           Mark read
                         </Button>
@@ -254,7 +319,10 @@ export default function Notifications() {
                         size="small"
                         color="error"
                         variant="outlined"
-                        onClick={() => deleteOne(n.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteOne(n.id);
+                        }}
                       >
                         Delete
                       </Button>
